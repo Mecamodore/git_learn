@@ -4,14 +4,17 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
-# 关键修复：显式声明所需权限（必须放在顶层！）
 permissions:
-  pull-requests: write  # 允许批准和合并PR
-  contents: read        # 仅读取代码（安全最小权限）
+  pull-requests: write
+  contents: read
 
 jobs:
   validate-and-merge:
     runs-on: ubuntu-latest
+    outputs:
+      line_count: ${{ steps.validator.outputs.line_count }}
+      valid: ${{ steps.validator.outputs.valid }}
+
     steps:
       - name: Emergency stop check
         run: |
@@ -36,13 +39,13 @@ jobs:
           echo "Validating PR from @$USER_LOGIN"
           echo "Branch name: $PR_HEAD_REF"
           
-          # Rule 1: Branch name must match username
+          # 规则1: 分支名必须等于用户名
           if [ "$PR_HEAD_REF" != "$USER_LOGIN" ]; then
             echo "::error::BRANCH NAME ERROR! Must be named '$USER_LOGIN' (current: '$PR_HEAD_REF')"
             exit 1
           fi
           
-          # Rule 2: Check note file
+          # 规则2: 检查笔记文件
           NOTE_FILE="notes/${USER_LOGIN}.md"
           if [ ! -f "$NOTE_FILE" ]; then
             NOTE_FILE="notes/${USER_LOGIN}.txt"
@@ -52,7 +55,7 @@ jobs:
             fi
           fi
           
-          # Rule 3: Check file content
+          # 规则3: 检查文件内容
           if [ ! -s "$NOTE_FILE" ]; then
             echo "::error::NOTE FILE CANNOT BE EMPTY!"
             exit 1
@@ -65,7 +68,7 @@ jobs:
             exit 1
           fi
           
-          # Rule 4: Check for unauthorized file changes
+          # 规则4: 检查是否修改了其他文件
           git diff --quiet ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} -- . ':!notes/'
           if [ $? -ne 0 ]; then
             echo "::error::MODIFICATION VIOLATION! Only changes in notes/ directory allowed"
@@ -78,24 +81,25 @@ jobs:
           echo "VALIDATION PASSED! Note file: $NOTE_FILE ($LINE_COUNT lines)"
           echo "valid=true" >> $GITHUB_OUTPUT
 
-      - name: Auto approve and merge (fixed version)
+      - name: Auto approve and merge
         if: steps.validator.outputs.valid == 'true'
         uses: actions/github-script@v7
         with:
-          # Critical fix 2: Use correct API path
+          # 关键修复：通过 with 传递必要参数
+          line_count: ${{ steps.validator.outputs.line_count }}
           script: |
-            // 1. Approve PR - Use correct API path
+            const lineCount = process.env.LINE_COUNT;
+            
+            // 1. 批准 PR
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
               event: 'APPROVE',
-              body: `AUTO VALIDATION PASSED!\n- Branch: \`${context.payload.pull_request.head.ref}\`\n- File: \`${context.payload.pull_request.user.login}.md\`\n- Lines: ${steps.validator.outputs.line_count}\n\nMerging automatically...`
+              body: `AUTO VALIDATION PASSED!\n- Branch: \`${context.payload.pull_request.head.ref}\`\n- File: \`${context.payload.pull_request.user.login}.md\`\n- Lines: ${lineCount}\n\nMerging automatically...`
             });
             
-            console.log('PR APPROVED');
-            
-            // 2. Merge PR - Use correct API path
+            // 2. 合并 PR
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -104,5 +108,3 @@ jobs:
               commit_title: `Add note: ${context.payload.pull_request.user.login}`,
               commit_message: `Auto-validated contribution from @${context.actor}`
             });
-            
-            console.log('PR SUCCESSFULLY MERGED TO MAIN BRANCH!');
